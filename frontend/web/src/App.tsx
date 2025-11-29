@@ -13,22 +13,21 @@ interface ContractData {
   publicValue1: number;
   publicValue2: number;
   description: string;
-  timestamp: number;
   creator: string;
-  isVerified?: boolean;
-  decryptedValue?: number;
+  timestamp: number;
+  isVerified: boolean;
+  decryptedValue: number;
 }
 
 const App: React.FC = () => {
   const { address, isConnected } = useAccount();
   const [loading, setLoading] = useState(true);
   const [contracts, setContracts] = useState<ContractData[]>([]);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingContract, setCreatingContract] = useState(false);
-  const [transactionStatus, setTransactionStatus] = useState<{ visible: boolean; status: "pending" | "success" | "error"; message: string; }>({ 
+  const [transactionStatus, setTransactionStatus] = useState({ 
     visible: false, 
-    status: "pending", 
+    status: "pending" as "pending" | "success" | "error", 
     message: "" 
   });
   const [newContractData, setNewContractData] = useState({ 
@@ -39,63 +38,43 @@ const App: React.FC = () => {
     publicValue2: ""
   });
   const [selectedContract, setSelectedContract] = useState<ContractData | null>(null);
-  const [isDecrypting, setIsDecrypting] = useState(false);
-  const [contractAddress, setContractAddress] = useState("");
-  const [fhevmInitializing, setFhevmInitializing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeFilter, setActiveFilter] = useState("all");
+  const [userHistory, setUserHistory] = useState<any[]>([]);
+  const [contractStats, setContractStats] = useState({
+    total: 0,
+    verified: 0,
+    pending: 0
+  });
 
-  const { initialize, isInitialized } = useFhevm();
+  const { status, initialize, isInitialized } = useFhevm();
   const { encrypt, isEncrypting } = useEncrypt();
   const { verifyDecryption, isDecrypting: fheIsDecrypting } = useDecrypt();
 
   useEffect(() => {
-    const initFhevmAfterConnection = async () => {
-      if (!isConnected || isInitialized || fhevmInitializing) return;
-      
-      try {
-        setFhevmInitializing(true);
-        await initialize();
-      } catch (error) {
-        setTransactionStatus({ 
-          visible: true, 
-          status: "error", 
-          message: "FHEVM initialization failed" 
-        });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
-      } finally {
-        setFhevmInitializing(false);
+    const initFhevm = async () => {
+      if (isConnected && !isInitialized) {
+        try {
+          await initialize();
+        } catch (error) {
+          console.error('FHEVM init failed:', error);
+        }
       }
     };
-
-    initFhevmAfterConnection();
-  }, [isConnected, isInitialized, initialize, fhevmInitializing]);
+    initFhevm();
+  }, [isConnected, isInitialized, initialize]);
 
   useEffect(() => {
-    const loadDataAndContract = async () => {
-      if (!isConnected) {
-        setLoading(false);
-        return;
-      }
-      
-      try {
-        await loadData();
-        const contract = await getContractReadOnly();
-        if (contract) setContractAddress(await contract.getAddress());
-      } catch (error) {
-        console.error('Failed to load data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadDataAndContract();
+    if (isConnected) {
+      loadData();
+    } else {
+      setLoading(false);
+    }
   }, [isConnected]);
 
   const loadData = async () => {
     if (!isConnected) return;
     
-    setIsRefreshing(true);
+    setLoading(true);
     try {
       const contract = await getContractReadOnly();
       if (!contract) return;
@@ -105,51 +84,79 @@ const App: React.FC = () => {
       
       for (const businessId of businessIds) {
         try {
-          const businessData = await contract.getBusinessData(businessId);
+          const data = await contract.getBusinessData(businessId);
           contractsList.push({
             id: businessId,
-            name: businessData.name,
+            name: data.name,
             encryptedValue: businessId,
-            publicValue1: Number(businessData.publicValue1) || 0,
-            publicValue2: Number(businessData.publicValue2) || 0,
-            description: businessData.description,
-            timestamp: Number(businessData.timestamp),
-            creator: businessData.creator,
-            isVerified: businessData.isVerified,
-            decryptedValue: Number(businessData.decryptedValue) || 0
+            publicValue1: Number(data.publicValue1),
+            publicValue2: Number(data.publicValue2),
+            description: data.description,
+            creator: data.creator,
+            timestamp: Number(data.timestamp),
+            isVerified: data.isVerified,
+            decryptedValue: Number(data.decryptedValue)
           });
         } catch (e) {
-          console.error('Error loading business data:', e);
+          console.error('Error loading contract:', e);
         }
       }
       
       setContracts(contractsList);
+      updateStats(contractsList);
+      updateUserHistory(contractsList);
     } catch (e) {
-      setTransactionStatus({ visible: true, status: "error", message: "Failed to load data" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
-    } finally { 
-      setIsRefreshing(false); 
+      showTransactionStatus("error", "Failed to load contracts");
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const updateStats = (contractsList: ContractData[]) => {
+    setContractStats({
+      total: contractsList.length,
+      verified: contractsList.filter(c => c.isVerified).length,
+      pending: contractsList.filter(c => !c.isVerified).length
+    });
+  };
+
+  const updateUserHistory = (contractsList: ContractData[]) => {
+    if (!address) return;
+    
+    const userContracts = contractsList.filter(c => c.creator.toLowerCase() === address.toLowerCase());
+    const history = userContracts.map(contract => ({
+      type: 'created',
+      contractId: contract.id,
+      name: contract.name,
+      timestamp: contract.timestamp,
+      status: contract.isVerified ? 'verified' : 'pending'
+    }));
+    
+    setUserHistory(history.sort((a, b) => b.timestamp - a.timestamp).slice(0, 10));
+  };
+
+  const showTransactionStatus = (status: "pending" | "success" | "error", message: string) => {
+    setTransactionStatus({ visible: true, status, message });
+    setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
   };
 
   const createContract = async () => {
     if (!isConnected || !address) { 
-      setTransactionStatus({ visible: true, status: "error", message: "Please connect wallet first" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
+      showTransactionStatus("error", "Please connect wallet first");
       return; 
     }
     
     setCreatingContract(true);
-    setTransactionStatus({ visible: true, status: "pending", message: "Creating contract with Zama FHE..." });
+    showTransactionStatus("pending", "Creating encrypted contract...");
     
     try {
       const contract = await getContractWithSigner();
-      if (!contract) throw new Error("Failed to get contract with signer");
+      if (!contract) throw new Error("Contract not available");
       
-      const contractValue = parseInt(newContractData.value) || 0;
+      const value = parseInt(newContractData.value) || 0;
       const businessId = `contract-${Date.now()}`;
       
-      const encryptedResult = await encrypt(contractAddress, address, contractValue);
+      const encryptedResult = await encrypt(await contract.getAddress(), address, value);
       
       const tx = await contract.createBusinessData(
         businessId,
@@ -161,86 +168,66 @@ const App: React.FC = () => {
         newContractData.description
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
+      showTransactionStatus("pending", "Waiting for confirmation...");
       await tx.wait();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Contract created successfully!" });
-      setTimeout(() => {
-        setTransactionStatus({ visible: false, status: "pending", message: "" });
-      }, 2000);
-      
+      showTransactionStatus("success", "Contract created successfully!");
       await loadData();
       setShowCreateModal(false);
       setNewContractData({ name: "", value: "", description: "", publicValue1: "", publicValue2: "" });
     } catch (e: any) {
-      const errorMessage = e.message?.includes("user rejected transaction") 
-        ? "Transaction rejected by user" 
-        : "Submission failed: " + (e.message || "Unknown error");
-      setTransactionStatus({ visible: true, status: "error", message: errorMessage });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
+      const errorMsg = e.message?.includes("user rejected") ? "Transaction rejected" : "Creation failed";
+      showTransactionStatus("error", errorMsg);
     } finally { 
       setCreatingContract(false); 
     }
   };
 
-  const decryptData = async (businessId: string): Promise<number | null> => {
+  const decryptContract = async (contractId: string) => {
     if (!isConnected || !address) { 
-      setTransactionStatus({ visible: true, status: "error", message: "Please connect wallet first" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
+      showTransactionStatus("error", "Please connect wallet first");
       return null; 
     }
     
-    setIsDecrypting(true);
     try {
       const contractRead = await getContractReadOnly();
       if (!contractRead) return null;
       
-      const businessData = await contractRead.getBusinessData(businessId);
-      if (businessData.isVerified) {
-        const storedValue = Number(businessData.decryptedValue) || 0;
-        setTransactionStatus({ visible: true, status: "success", message: "Data already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
-        return storedValue;
+      const contractData = await contractRead.getBusinessData(contractId);
+      if (contractData.isVerified) {
+        showTransactionStatus("success", "Contract already verified");
+        await loadData();
+        return Number(contractData.decryptedValue);
       }
       
       const contractWrite = await getContractWithSigner();
       if (!contractWrite) return null;
       
-      const encryptedValueHandle = await contractRead.getEncryptedValue(businessId);
+      const encryptedValue = await contractRead.getEncryptedValue(contractId);
       
       const result = await verifyDecryption(
-        [encryptedValueHandle],
-        contractAddress,
+        [encryptedValue],
+        await contractWrite.getAddress(),
         (abiEncodedClearValues: string, decryptionProof: string) => 
-          contractWrite.verifyDecryption(businessId, abiEncodedClearValues, decryptionProof)
+          contractWrite.verifyDecryption(contractId, abiEncodedClearValues, decryptionProof)
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Verifying decryption on-chain..." });
+      showTransactionStatus("pending", "Verifying decryption...");
       
-      const clearValue = result.decryptionResult.clearValues[encryptedValueHandle];
-      
+      const clearValue = result.decryptionResult.clearValues[encryptedValue];
       await loadData();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Data decrypted and verified successfully!" });
-      setTimeout(() => {
-        setTransactionStatus({ visible: false, status: "pending", message: "" });
-      }, 2000);
-      
+      showTransactionStatus("success", "Decryption verified successfully!");
       return Number(clearValue);
       
     } catch (e: any) { 
-      if (e.message?.includes("Data already verified")) {
-        setTransactionStatus({ visible: true, status: "success", message: "Data is already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+      if (e.message?.includes("already verified")) {
+        showTransactionStatus("success", "Contract already verified");
         await loadData();
         return null;
       }
-      
-      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed: " + (e.message || "Unknown error") });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
+      showTransactionStatus("error", "Decryption failed");
       return null; 
-    } finally { 
-      setIsDecrypting(false); 
     }
   };
 
@@ -249,312 +236,329 @@ const App: React.FC = () => {
       const contract = await getContractReadOnly();
       if (!contract) return;
       
-      const isAvailable = await contract.isAvailable();
-      setTransactionStatus({ visible: true, status: "success", message: "Contract is available and working!" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+      const available = await contract.isAvailable();
+      if (available) {
+        showTransactionStatus("success", "Contract is available and ready");
+      }
     } catch (e) {
-      setTransactionStatus({ visible: true, status: "error", message: "Availability check failed" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
+      showTransactionStatus("error", "Availability check failed");
     }
   };
 
-  const filteredContracts = contracts.filter(contract => {
-    const matchesSearch = contract.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         contract.description.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFilter = activeFilter === "all" || 
-                         (activeFilter === "verified" && contract.isVerified) ||
-                         (activeFilter === "unverified" && !contract.isVerified);
-    return matchesSearch && matchesFilter;
-  });
-
-  const stats = {
-    total: contracts.length,
-    verified: contracts.filter(c => c.isVerified).length,
-    recent: contracts.filter(c => Date.now()/1000 - c.timestamp < 60 * 60 * 24 * 7).length,
-    avgValue: contracts.length > 0 ? contracts.reduce((sum, c) => sum + c.publicValue1, 0) / contracts.length : 0
-  };
+  const filteredContracts = contracts.filter(contract =>
+    contract.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    contract.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    contract.id.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   if (!isConnected) {
     return (
       <div className="app-container">
         <header className="app-header">
-          <div className="logo">
-            <h1>PrivateCont_Z 🔐</h1>
-            <span>隱私智能合約</span>
+          <div className="logo-section">
+            <div className="gear-logo">⚙️</div>
+            <h1>PrivateCont_Z</h1>
+            <span className="tagline">FHE智能合约平台</span>
           </div>
-          <div className="header-actions">
-            <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
-          </div>
+          <ConnectButton />
         </header>
         
         <div className="connection-prompt">
-          <div className="connection-content">
-            <div className="connection-icon">🔐</div>
-            <h2>Connect Wallet to Access Private Contracts</h2>
-            <p>Connect your wallet to initialize the FHE encryption system and manage private smart contracts.</p>
+          <div className="industrial-panel">
+            <div className="panel-title">🔐 隐私智能合约系统</div>
+            <p>连接钱包以访问加密的智能合约平台</p>
+            <div className="feature-grid">
+              <div className="feature-item">
+                <div className="feature-icon">🔒</div>
+                <span>参数加密存储</span>
+              </div>
+              <div className="feature-item">
+                <div className="feature-icon">⚡</div>
+                <span>同态计算验证</span>
+              </div>
+              <div className="feature-item">
+                <div className="feature-icon">🔍</div>
+                <span>自动化法务执行</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  if (!isInitialized || fhevmInitializing) {
+  if (loading) {
     return (
       <div className="loading-screen">
-        <div className="fhe-spinner"></div>
-        <p>Initializing FHE Encryption System...</p>
+        <div className="industrial-spinner"></div>
+        <p>加载加密合约系统...</p>
       </div>
     );
   }
-
-  if (loading) return (
-    <div className="loading-screen">
-      <div className="fhe-spinner"></div>
-      <p>Loading encrypted contract system...</p>
-    </div>
-  );
 
   return (
     <div className="app-container">
       <header className="app-header">
-        <div className="logo">
-          <h1>PrivateCont_Z 🔐</h1>
-          <span>隱私智能合約</span>
+        <div className="logo-section">
+          <div className="gear-logo">⚙️</div>
+          <h1>PrivateCont_Z</h1>
         </div>
         
-        <div className="header-actions">
-          <button onClick={checkAvailability} className="test-btn">
-            Test Contract
+        <div className="header-controls">
+          <button className="industrial-btn" onClick={checkAvailability}>
+            检查系统状态
           </button>
-          <button onClick={() => setShowCreateModal(true)} className="create-btn">
-            + New Contract
-          </button>
-          <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+          <ConnectButton />
         </div>
       </header>
-      
-      <div className="main-content">
-        <div className="stats-grid">
-          <div className="stat-card">
-            <div className="stat-value">{stats.total}</div>
-            <div className="stat-label">Total Contracts</div>
+
+      <main className="main-content">
+        <div className="control-panel">
+          <div className="panel-section">
+            <h3>系统控制</h3>
+            <button 
+              className="industrial-btn primary"
+              onClick={() => setShowCreateModal(true)}
+            >
+              创建加密合约
+            </button>
+            <button className="industrial-btn" onClick={loadData}>
+              刷新数据
+            </button>
           </div>
-          <div className="stat-card">
-            <div className="stat-value">{stats.verified}</div>
-            <div className="stat-label">Verified</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-value">{stats.recent}</div>
-            <div className="stat-label">This Week</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-value">{stats.avgValue.toFixed(1)}</div>
-            <div className="stat-label">Avg Value</div>
+
+          <div className="panel-section">
+            <h3>数据统计</h3>
+            <div className="stats-grid">
+              <div className="stat-item">
+                <span className="stat-value">{contractStats.total}</span>
+                <span className="stat-label">总合约数</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">{contractStats.verified}</span>
+                <span className="stat-label">已验证</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">{contractStats.pending}</span>
+                <span className="stat-label">待验证</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="controls-section">
-          <div className="search-filter">
-            <input 
-              type="text" 
-              placeholder="Search contracts..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="search-input"
-            />
-            <div className="filter-buttons">
-              <button 
-                className={activeFilter === "all" ? "active" : ""}
-                onClick={() => setActiveFilter("all")}
-              >
-                All
-              </button>
-              <button 
-                className={activeFilter === "verified" ? "active" : ""}
-                onClick={() => setActiveFilter("verified")}
-              >
-                Verified
-              </button>
-              <button 
-                className={activeFilter === "unverified" ? "active" : ""}
-                onClick={() => setActiveFilter("unverified")}
-              >
-                Unverified
-              </button>
+        <div className="content-area">
+          <div className="search-section">
+            <div className="search-box">
+              <input
+                type="text"
+                placeholder="搜索合约名称或描述..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="industrial-input"
+              />
             </div>
           </div>
-          <button onClick={loadData} className="refresh-btn" disabled={isRefreshing}>
-            {isRefreshing ? "Refreshing..." : "Refresh"}
-          </button>
-        </div>
 
-        <div className="contracts-list">
-          {filteredContracts.length === 0 ? (
-            <div className="no-contracts">
-              <p>No contracts found</p>
-              <button onClick={() => setShowCreateModal(true)} className="create-btn">
-                Create First Contract
-              </button>
-            </div>
-          ) : (
-            filteredContracts.map((contract, index) => (
+          <div className="contracts-grid">
+            {filteredContracts.map((contract) => (
               <div 
-                className={`contract-item ${contract.isVerified ? "verified" : ""}`}
-                key={index}
+                key={contract.id} 
+                className={`contract-card ${contract.isVerified ? 'verified' : 'pending'}`}
                 onClick={() => setSelectedContract(contract)}
               >
-                <div className="contract-header">
-                  <h3>{contract.name}</h3>
-                  <span className={`status ${contract.isVerified ? "verified" : "pending"}`}>
-                    {contract.isVerified ? "✅ Verified" : "🔓 Pending"}
+                <div className="card-header">
+                  <h4>{contract.name}</h4>
+                  <span className={`status-badge ${contract.isVerified ? 'verified' : 'pending'}`}>
+                    {contract.isVerified ? '✅ 已验证' : '⏳ 待验证'}
                   </span>
                 </div>
                 <p className="contract-desc">{contract.description}</p>
                 <div className="contract-meta">
-                  <span>Value: {contract.publicValue1}</span>
-                  <span>Date: {new Date(contract.timestamp * 1000).toLocaleDateString()}</span>
+                  <span>创建者: {contract.creator.substring(0, 8)}...</span>
+                  <span>时间: {new Date(contract.timestamp * 1000).toLocaleDateString()}</span>
                 </div>
-                {contract.isVerified && contract.decryptedValue && (
+                {contract.isVerified && (
                   <div className="decrypted-value">
-                    Decrypted: {contract.decryptedValue}
+                    解密值: {contract.decryptedValue}
                   </div>
                 )}
               </div>
-            ))
+            ))}
+          </div>
+
+          {userHistory.length > 0 && (
+            <div className="history-section">
+              <h3>操作历史</h3>
+              <div className="history-list">
+                {userHistory.map((record, index) => (
+                  <div key={index} className="history-item">
+                    <span className="history-type">{record.type === 'created' ? '创建' : '操作'}</span>
+                    <span className="history-name">{record.name}</span>
+                    <span className={`history-status ${record.status}`}>
+                      {record.status === 'verified' ? '已验证' : '待验证'}
+                    </span>
+                    <span className="history-time">
+                      {new Date(record.timestamp * 1000).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
-      </div>
-      
+      </main>
+
       {showCreateModal && (
         <div className="modal-overlay">
-          <div className="create-modal">
+          <div className="industrial-modal">
             <div className="modal-header">
-              <h2>Create Private Contract</h2>
-              <button onClick={() => setShowCreateModal(false)} className="close-btn">&times;</button>
+              <h3>创建加密合约</h3>
+              <button onClick={() => setShowCreateModal(false)}>×</button>
             </div>
             
             <div className="modal-body">
               <div className="form-group">
-                <label>Contract Name</label>
-                <input 
-                  type="text" 
+                <label>合约名称</label>
+                <input
+                  type="text"
                   value={newContractData.name}
                   onChange={(e) => setNewContractData({...newContractData, name: e.target.value})}
-                  placeholder="Enter contract name..."
+                  className="industrial-input"
                 />
               </div>
               
               <div className="form-group">
-                <label>Encrypted Value (Integer)</label>
-                <input 
-                  type="number" 
+                <label>加密数值 (整数)</label>
+                <input
+                  type="number"
                   value={newContractData.value}
                   onChange={(e) => setNewContractData({...newContractData, value: e.target.value})}
-                  placeholder="Enter value to encrypt..."
+                  className="industrial-input"
                 />
-                <small>This value will be FHE encrypted</small>
+                <span className="input-hint">🔐 此数值将被FHE加密</span>
               </div>
               
               <div className="form-group">
-                <label>Public Value 1</label>
-                <input 
-                  type="number" 
+                <label>公共参数 1</label>
+                <input
+                  type="number"
                   value={newContractData.publicValue1}
                   onChange={(e) => setNewContractData({...newContractData, publicValue1: e.target.value})}
-                  placeholder="Enter public value..."
+                  className="industrial-input"
                 />
               </div>
               
               <div className="form-group">
-                <label>Description</label>
-                <textarea 
+                <label>公共参数 2</label>
+                <input
+                  type="number"
+                  value={newContractData.publicValue2}
+                  onChange={(e) => setNewContractData({...newContractData, publicValue2: e.target.value})}
+                  className="industrial-input"
+                />
+              </div>
+              
+              <div className="form-group">
+                <label>合约描述</label>
+                <textarea
                   value={newContractData.description}
                   onChange={(e) => setNewContractData({...newContractData, description: e.target.value})}
-                  placeholder="Enter contract description..."
+                  className="industrial-input"
                   rows={3}
                 />
               </div>
             </div>
             
             <div className="modal-footer">
-              <button onClick={() => setShowCreateModal(false)} className="cancel-btn">Cancel</button>
               <button 
-                onClick={createContract} 
+                onClick={createContract}
                 disabled={creatingContract || isEncrypting}
-                className="submit-btn"
+                className="industrial-btn primary"
               >
-                {creatingContract || isEncrypting ? "Creating..." : "Create Contract"}
+                {creatingContract || isEncrypting ? "加密创建中..." : "创建合约"}
+              </button>
+              <button 
+                onClick={() => setShowCreateModal(false)}
+                className="industrial-btn"
+              >
+                取消
               </button>
             </div>
           </div>
         </div>
       )}
-      
+
       {selectedContract && (
         <div className="modal-overlay">
-          <div className="detail-modal">
+          <div className="industrial-modal large">
             <div className="modal-header">
-              <h2>Contract Details</h2>
-              <button onClick={() => setSelectedContract(null)} className="close-btn">&times;</button>
+              <h3>合约详情</h3>
+              <button onClick={() => setSelectedContract(null)}>×</button>
             </div>
             
             <div className="modal-body">
-              <div className="detail-section">
-                <h3>{selectedContract.name}</h3>
-                <p>{selectedContract.description}</p>
-              </div>
-              
               <div className="detail-grid">
                 <div className="detail-item">
-                  <span>Public Value 1:</span>
-                  <strong>{selectedContract.publicValue1}</strong>
+                  <label>合约ID</label>
+                  <span>{selectedContract.id}</span>
                 </div>
                 <div className="detail-item">
-                  <span>Public Value 2:</span>
-                  <strong>{selectedContract.publicValue2}</strong>
+                  <label>名称</label>
+                  <span>{selectedContract.name}</span>
                 </div>
                 <div className="detail-item">
-                  <span>Created:</span>
-                  <strong>{new Date(selectedContract.timestamp * 1000).toLocaleDateString()}</strong>
+                  <label>描述</label>
+                  <span>{selectedContract.description}</span>
                 </div>
                 <div className="detail-item">
-                  <span>Creator:</span>
-                  <strong>{selectedContract.creator.substring(0, 8)}...{selectedContract.creator.substring(36)}</strong>
+                  <label>创建者</label>
+                  <span>{selectedContract.creator}</span>
                 </div>
+                <div className="detail-item">
+                  <label>创建时间</label>
+                  <span>{new Date(selectedContract.timestamp * 1000).toLocaleString()}</span>
+                </div>
+                <div className="detail-item">
+                  <label>公共参数 1</label>
+                  <span>{selectedContract.publicValue1}</span>
+                </div>
+                <div className="detail-item">
+                  <label>公共参数 2</label>
+                  <span>{selectedContract.publicValue2}</span>
+                </div>
+                <div className="detail-item">
+                  <label>验证状态</label>
+                  <span className={`status-badge ${selectedContract.isVerified ? 'verified' : 'pending'}`}>
+                    {selectedContract.isVerified ? '已验证' : '未验证'}
+                  </span>
+                </div>
+                {selectedContract.isVerified && (
+                  <div className="detail-item">
+                    <label>解密数值</label>
+                    <span className="decrypted-value">{selectedContract.decryptedValue}</span>
+                  </div>
+                )}
               </div>
               
-              <div className="encrypted-section">
-                <h4>Encrypted Data</h4>
-                <div className="encrypted-status">
-                  <span>Status: {selectedContract.isVerified ? "✅ Verified" : "🔒 Encrypted"}</span>
-                  {selectedContract.isVerified && selectedContract.decryptedValue && (
-                    <div className="decrypted-result">
-                      Decrypted Value: <strong>{selectedContract.decryptedValue}</strong>
-                    </div>
-                  )}
+              {!selectedContract.isVerified && (
+                <div className="verification-section">
+                  <button 
+                    onClick={() => decryptContract(selectedContract.id)}
+                    className="industrial-btn primary"
+                  >
+                    🔓 验证解密
+                  </button>
+                  <p className="hint-text">点击验证合约数据的解密结果</p>
                 </div>
-                
-                <button 
-                  onClick={() => decryptData(selectedContract.id)}
-                  disabled={isDecrypting || fheIsDecrypting}
-                  className="decrypt-btn"
-                >
-                  {isDecrypting || fheIsDecrypting ? "Decrypting..." : "Decrypt Value"}
-                </button>
-              </div>
+              )}
             </div>
           </div>
         </div>
       )}
-      
+
       {transactionStatus.visible && (
-        <div className="transaction-toast">
-          <div className={`toast-content ${transactionStatus.status}`}>
-            {transactionStatus.status === "pending" && <div className="spinner"></div>}
-            {transactionStatus.status === "success" && <span>✓</span>}
-            {transactionStatus.status === "error" && <span>✗</span>}
-            {transactionStatus.message}
-          </div>
+        <div className={`transaction-toast ${transactionStatus.status}`}>
+          {transactionStatus.message}
         </div>
       )}
     </div>
